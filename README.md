@@ -161,6 +161,24 @@ whichever has the better signal.
 - Check **Settings → Devices & Services → Bluetooth** to confirm your adapter
   or proxy is healthy and actively scanning.
 
+**Using a Shelly device as the Bluetooth proxy — nothing connects.**
+- Shelly's Bluetooth proxy is **passive only**: it relays advertisements but
+  cannot open GATT connections. This integration needs an *active* connection
+  (the device requires an authentication handshake), so a Shelly proxy will
+  never work for it. Use a local Bluetooth adapter or an **ESP32 flashed as an
+  ESPHome Bluetooth proxy** with `bluetooth_proxy: active: true`.
+
+**ESP32 proxy logs show endless `status=133` / "Connection open error".**
+- Add `power_save_mode: none` under `wifi:` in the ESP32's ESPHome config.
+  Wi‑Fi power saving starves the shared radio and breaks BLE connection
+  timing — this is the most common cause.
+- Close the Inkbird phone app and power-cycle the thermometer once (it can
+  hold a stale "zombie" session and ignore new connection requests).
+- Update this integration to **v1.1.3+**: earlier versions retried failed
+  connections faster than an ESPHome proxy can tear the previous attempt
+  down, which wedged the proxy in a `status=133` loop. v1.1.3 connects right
+  after a fresh advertisement and backs off between attempts.
+
 **Probe reads a strange value (e.g. blank / no reading).**
 - A probe that isn't plugged in reports no reading and the sensor stays empty.
   This is expected.

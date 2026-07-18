@@ -20,6 +20,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak_retry_connector import establish_connection
 
 from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import BluetoothCallbackMatcher
 from homeassistant.core import HomeAssistant, callback
 
 from .auth import (
@@ -147,10 +148,18 @@ class InkbirdCoordinator:
     # ---- connection loop --------------------------------------------------
 
     async def _run(self) -> None:
+        failures = 0
         while not self._stop.is_set():
-            device = bluetooth.async_ble_device_from_address(
-                self.hass, self.address, connectable=True
-            )
+            # Connect right after a *fresh* advertisement whenever we can:
+            # the INT-14-BW is only reliably listening for CONNECT_IND just
+            # after it advertises, and an ESPHome proxy needs the device to
+            # respond promptly or its client state machine jams (endless
+            # status=133 / "OPEN_EVT in DISCONNECTING state" loops).
+            device = await self._wait_fresh_advertisement(timeout=25)
+            if device is None:
+                device = bluetooth.async_ble_device_from_address(
+                    self.hass, self.address, connectable=True
+                )
             if device is None:
                 # Not in range of any adapter/proxy right now — the HA
                 # Bluetooth stack will keep scanning; just wait and retry.
@@ -158,6 +167,7 @@ class InkbirdCoordinator:
                 await self._sleep(20)
                 continue
 
+            started = self.hass.loop.time()
             try:
                 await self._session(device)
             except asyncio.CancelledError:
@@ -165,15 +175,61 @@ class InkbirdCoordinator:
             except Exception as err:  # noqa: BLE001 - resilience loop
                 _LOGGER.debug("Inkbird session ended: %s", err)
             self._set_available(False)
-            await self._sleep(10)
+
+            # A session that held for a while was a real connection; only
+            # quick deaths count as connect failures.
+            if self.hass.loop.time() - started > 60:
+                failures = 0
+            else:
+                failures = min(failures + 1, 4)
+            # Back off after failures: a remote proxy needs time to tear
+            # down a failed connection attempt before it will accept a new
+            # one. Hammering it just produces "request ignored" loops.
+            delay = min(90, 15 * failures) if failures else 10
+            await self._sleep(delay)
+
+    async def _wait_fresh_advertisement(self, timeout: float) -> BLEDevice | None:
+        """Wait for the next advertisement from the device.
+
+        Returns the freshly-seen BLEDevice (best connectable path chosen by
+        HA), or None on timeout. Connecting immediately after an
+        advertisement dramatically improves connect reliability through
+        ESPHome proxies.
+        """
+        evt = asyncio.Event()
+        found: dict[str, BLEDevice] = {}
+
+        @callback
+        def _on_adv(
+            service_info: bluetooth.BluetoothServiceInfoBleak,
+            _change: bluetooth.BluetoothChange,
+        ) -> None:
+            found["device"] = service_info.device
+            evt.set()
+
+        unregister = bluetooth.async_register_callback(
+            self.hass,
+            _on_adv,
+            BluetoothCallbackMatcher(address=self.address, connectable=True),
+            bluetooth.BluetoothScanningMode.ACTIVE,
+        )
+        try:
+            with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                await asyncio.wait_for(evt.wait(), timeout)
+        finally:
+            unregister()
+        return found.get("device")
 
     async def _session(self, device: BLEDevice) -> None:
         self._authed.clear()
         self._challenge_evt.clear()
         self._challenge = None
 
+        # Two attempts max: rapid-fire retries overlap with the proxy's
+        # teardown of the previous attempt and wedge its client state
+        # machine. The outer loop provides the real (backed-off) retries.
         client = await establish_connection(
-            BleakClient, device, self.address, max_attempts=4
+            BleakClient, device, self.address, max_attempts=2
         )
         self._client = client
         _LOGGER.debug("Connected to %s", self.address)

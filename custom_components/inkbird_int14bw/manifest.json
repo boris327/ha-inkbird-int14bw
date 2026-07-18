@@ -6,12 +6,18 @@
       "local_name": "INT-14-BW"
     }
   ],
-  "codeowners": ["@boris327"],
+  "codeowners": [
+    "@boris327"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/boris327/ha-inkbird-int14bw",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/boris327/ha-inkbird-int14bw/issues",
-  "requirements": ["bleak-retry-connector>=3.5.0"],
-  "version": "1.1.2"
+  "requirements": [
+    "bleak-retry-connector>=3.5.0"
+  ],
+  "version": "1.1.3"
 }
