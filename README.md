@@ -178,6 +178,19 @@ whichever has the better signal.
   connections faster than an ESPHome proxy can tear the previous attempt
   down, which wedged the proxy in a `status=133` loop. v1.1.3 connects right
   after a fresh advertisement and backs off between attempts.
+- If you are still getting disconnect type (usually code 133) errors,
+  you may need to use a different ESP32 module/board for your proxy.
+  Some ESP32 boards, while perfectly capable of serving as passive BLE proxies,
+  notoriously fail trying to support active GATT connections, which are used
+  by this integration. Some boards that have shown good results are --
+  - ESP32-C6 type boards
+  - Older ESP32 boards with a chip identified as ESP32-D0WDQ6-Vx
+  
+  Some boards that would potentially have difficulties with GATT connections --
+  - ESP32-C3 type boards
+  - Older ESP32 boards with a chip identified as ESP32-D0WD-V3
+  
+  As usual, Your Mileage May Vary.
 
 **Probe reads a strange value (e.g. blank / no reading).**
 - A probe that isn't plugged in reports no reading and the sensor stays empty.
