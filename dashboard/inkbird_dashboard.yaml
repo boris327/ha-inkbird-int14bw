@@ -304,16 +304,20 @@ views:
         - padding: 20px 24px
         - box-shadow: 0 18px 40px -18px rgba(0,0,0,.7)
         grid:
-        - grid-template-areas: '"dev meta batt"'
-        - grid-template-columns: auto 1fr auto
+        - grid-template-areas: "\"dev unit batt\" \"dev meta batt\""
+        - grid-template-columns: minmax(90px, 172px) 1fr auto
+        - grid-template-rows: auto auto
         - align-items: center
-        - gap: 26px
+        - gap: 6px 26px
         custom_fields:
           meta:
           - justify-self: start
+          unit:
+          - justify-self: start
       custom_fields:
         dev: |
-          [[[ return `<svg width="172" height="158" viewBox="0 0 172 158" fill="none">
+          [[[ return `<svg width="100%" height="auto" viewBox="0 0 172 158"
+            style="max-width:172px;display:block" fill="none">
             <rect x="3" y="3" width="166" height="152" rx="24" fill="#0b0b0d" stroke="#c9cdd2" stroke-width="3"/>
             <rect x="9" y="9" width="154" height="140" rx="19" fill="#141416" stroke="#2a2a2e"/>
             <rect x="18" y="20" width="66" height="104" rx="11" fill="#0a0a0c" stroke="#242428"/>
@@ -329,6 +333,32 @@ views:
             <text x="123" y="128" font-family="system-ui" font-weight="700" font-size="9" fill="#c9cdd2" text-anchor="middle" letter-spacing="1.5">INKBIRD</text>
             <circle cx="63" cy="136" r="10" fill="#0a0a0c" stroke="#c9cdd2" stroke-width="1.5"/>
             <circle cx="63" cy="136" r="6" fill="#1a1a1e"/></svg>`; ]]]
+        unit:
+          card:
+            type: custom:button-card
+            name: |
+              [[[ return states['input_select.inkbird_unit'].state; ]]]
+            tap_action:
+              action: call-service
+              service: input_select.select_option
+              target:
+                entity_id: input_select.inkbird_unit
+              data:
+                option: |
+                  [[[ return states['input_select.inkbird_unit'].state === '°C' ? '°F' : '°C'; ]]]
+            styles:
+              card:
+                - width: 44px
+                - height: 24px
+                - min-height: 24px
+                - border-radius: 7px
+                - border: 1px solid "#4d3f33"
+                - background: "#33291f"
+                - color: "#ff6a2c"
+                - font-family: ui-monospace, monospace
+                - font-weight: 700
+                - font-size: 1.05rem
+                - padding: 0
         meta: |
           [[[
             var b = states['sensor.int_14_bw_battery'].state;
@@ -354,19 +384,6 @@ views:
               <span style="font-family:ui-monospace,monospace;font-weight:600;color:#f5ede4">${isNaN(raw)?'—':pct+'%'}</span>
             </div>`;
           ]]]
-    - type: entities
-      entities:
-      - entity: input_select.inkbird_active_probe
-        name: Active probe (for recipes)
-      - entity: input_select.inkbird_unit
-        name: Temperature unit
-      card_mod:
-        style: |
-          ha-card {
-            background: linear-gradient(180deg,#211b16,#2b231d);
-            border:1px solid #3a2f27; border-radius:18px; color:#f5ede4;
-          }
-          .card-content { color:#f5ede4; }
     - type: grid
       columns: 2
       square: false
