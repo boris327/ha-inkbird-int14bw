@@ -224,7 +224,14 @@ button_card_templates:
         - justify-self: start
     custom_fields:
       t: |
-        [[[ return `<div style="font-family:ui-monospace,monospace;font-weight:650;font-size:1.15rem;color:#ff6a2c">${variables.temp}<span style="font-size:.74rem;color:#a89a8c">°C</span></div>`; ]]]
+        [[[
+          var uf = states['input_select.inkbird_unit'].state.indexOf('F') >= 0;
+          var us = uf ? '°F' : '°C';
+          var cv = function(c){ return uf ? Math.round(c*9/5+32) : Math.round(c*10)/10; };
+          var disp = cv(variables.temp);
+          return `<div style="font-family:ui-monospace,monospace;font-weight:650;font-size:1.15rem;color:#ff6a2c">${disp}<span
+          style="font-size:.74rem;color:#a89a8c">${us}</span></div>`;
+        ]]]
       s: |
         [[[ return `<div style="font-size:.74rem;color:#a89a8c">${variables.note}</div>`; ]]]
     tap_action:
