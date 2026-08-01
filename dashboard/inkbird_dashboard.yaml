@@ -4,7 +4,12 @@ button_card_templates:
     show_icon: false
     show_label: false
     tap_action:
-      action: none
+      action: call-service
+      service: input_select.select_option
+      target:
+        entity_id: input_select.inkbird_active_probe
+      data:
+        option: "[[[ return String(variables.num) ]]]"
     styles:
       card:
       - padding: 18px
