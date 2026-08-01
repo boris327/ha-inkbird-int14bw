@@ -32,7 +32,7 @@ button_card_templates:
             return sel ? '0 0 0 2px #ff6a2c66, 0 18px 40px -18px rgba(0,0,0,.7)' : '0 18px 40px -18px rgba(0,0,0,.7)';
           ]]]
       grid:
-      - grid-template-areas: '"header header header header" "fig gauge side side" "fig gauge minus plus"'
+      - grid-template-areas: '"header header header header" "amb amb amb amb" "fig gauge side side" "fig gauge minus plus"'
       - grid-template-columns: 34px 128px 1fr 1fr
       - grid-template-rows: auto 1fr auto
       - gap: 10px 12px
@@ -64,6 +64,21 @@ button_card_templates:
             <div style="font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
                  padding:5px 11px;border-radius:999px;color:${col};
                  background:${col}26;border:1px solid ${col}66">${label}</div>
+          </div>`;
+        ]]]
+      amb: |
+        [[[
+          var raw = states[variables.ambient];
+          var val = raw ? parseFloat(raw.state) : NaN;
+          var uf = states['input_select.inkbird_unit'].state.indexOf('F') >= 0;
+          var us = uf ? '°F' : '°C';
+          var cv = function(c){ return uf ? Math.round(c*9/5+32) : Math.round(c*10)/10; };
+          var disp = isNaN(val) ? '—' : cv(val) + us;
+          return `<div style="display:flex;align-items:center;gap:6px;font-family:system-ui;
+               font-size:.74rem;color:#a89a8c;padding:0 2px">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#77695c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v10.55a4 4 0 1 0 4 0V3z"/></svg>
+            <span>Ambient: <b style="color:#f5ede4;font-family:ui-monospace,monospace;font-weight:600">${disp}</b></span>
           </div>`;
         ]]]
       fig: |
@@ -361,6 +376,7 @@ views:
         variables:
           num: 1
           probe: sensor.int_14_bw_probe_1
+          ambient: sensor.int_14_bw_probe_1_ambient
           target: input_number.inkbird_target_1
           pname: input_text.inkbird_name_1
           pstate: sensor.inkbird_probe_1_state
@@ -369,6 +385,7 @@ views:
         variables:
           num: 2
           probe: sensor.int_14_bw_probe_2
+          ambient: sensor.int_14_bw_probe_2_ambient
           target: input_number.inkbird_target_2
           pname: input_text.inkbird_name_2
           pstate: sensor.inkbird_probe_2_state
@@ -377,6 +394,7 @@ views:
         variables:
           num: 3
           probe: sensor.int_14_bw_probe_3
+          ambient: sensor.int_14_bw_probe_3_ambient
           target: input_number.inkbird_target_3
           pname: input_text.inkbird_name_3
           pstate: sensor.inkbird_probe_3_state
@@ -385,6 +403,7 @@ views:
         variables:
           num: 4
           probe: sensor.int_14_bw_probe_4
+          ambient: sensor.int_14_bw_probe_4_ambient
           target: input_number.inkbird_target_4
           pname: input_text.inkbird_name_4
           pstate: sensor.inkbird_probe_4_state
