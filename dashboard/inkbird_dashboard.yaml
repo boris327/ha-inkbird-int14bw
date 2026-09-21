@@ -14,7 +14,11 @@ button_card_templates:
       card:
       - padding: 18px
       - border-radius: 18px
-      - border: 1px solid "#3a2f27"
+      - border: |
+          [[[
+            var sel = String(variables.num) === states['input_select.inkbird_active_probe'].state;
+            return sel ? '1px solid #ff6a2c' : '1px solid #3a2f27';
+          ]]]
       - border-top: |
           [[[
             var s = states[variables.pstate].state;
@@ -22,9 +26,13 @@ button_card_templates:
             return '3px solid ' + c;
           ]]]
       - background: linear-gradient(180deg,#211b16,#2b231d)
-      - box-shadow: 0 18px 40px -18px rgba(0,0,0,.7)
+      - box-shadow: |
+          [[[
+            var sel = String(variables.num) === states['input_select.inkbird_active_probe'].state;
+            return sel ? '0 0 0 2px #ff6a2c66, 0 18px 40px -18px rgba(0,0,0,.7)' : '0 18px 40px -18px rgba(0,0,0,.7)';
+          ]]]
       grid:
-      - grid-template-areas: '"header header header header" "fig gauge side side" "fig gauge minus plus"'
+      - grid-template-areas: '"header header header header" "amb amb amb amb" "fig gauge side side" "fig gauge minus plus"'
       - grid-template-columns: 34px 128px 1fr 1fr
       - grid-template-rows: auto 1fr auto
       - gap: 10px 12px
@@ -56,6 +64,21 @@ button_card_templates:
             <div style="font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
                  padding:5px 11px;border-radius:999px;color:${col};
                  background:${col}26;border:1px solid ${col}66">${label}</div>
+          </div>`;
+        ]]]
+      amb: |
+        [[[
+          var raw = states[variables.ambient];
+          var val = raw ? parseFloat(raw.state) : NaN;
+          var uf = states['input_select.inkbird_unit'].state.indexOf('F') >= 0;
+          var us = uf ? '°F' : '°C';
+          var cv = function(c){ return uf ? Math.round(c*9/5+32) : Math.round(c*10)/10; };
+          var disp = isNaN(val) ? '—' : cv(val) + us;
+          return `<div style="display:flex;align-items:center;gap:6px;font-family:system-ui;
+               font-size:.74rem;color:#a89a8c;padding:0 2px">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#77695c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v10.55a4 4 0 1 0 4 0V3z"/></svg>
+            <span>Ambient: <b style="color:#f5ede4;font-family:ui-monospace,monospace;font-weight:600">${disp}</b></span>
           </div>`;
         ]]]
       fig: |
@@ -201,7 +224,14 @@ button_card_templates:
         - justify-self: start
     custom_fields:
       t: |
-        [[[ return `<div style="font-family:ui-monospace,monospace;font-weight:650;font-size:1.15rem;color:#ff6a2c">${variables.temp}<span style="font-size:.74rem;color:#a89a8c">°C</span></div>`; ]]]
+        [[[
+          var uf = states['input_select.inkbird_unit'].state.indexOf('F') >= 0;
+          var us = uf ? '°F' : '°C';
+          var cv = function(c){ return uf ? Math.round(c*9/5+32) : Math.round(c*10)/10; };
+          var disp = cv(variables.temp);
+          return `<div style="font-family:ui-monospace,monospace;font-weight:650;font-size:1.15rem;color:#ff6a2c">${disp}<span
+          style="font-size:.74rem;color:#a89a8c">${us}</span></div>`;
+        ]]]
       s: |
         [[[ return `<div style="font-size:.74rem;color:#a89a8c">${variables.note}</div>`; ]]]
     tap_action:
@@ -281,16 +311,20 @@ views:
         - padding: 20px 24px
         - box-shadow: 0 18px 40px -18px rgba(0,0,0,.7)
         grid:
-        - grid-template-areas: '"dev meta batt"'
-        - grid-template-columns: auto 1fr auto
+        - grid-template-areas: "\"dev unit batt\" \"dev meta batt\""
+        - grid-template-columns: minmax(90px, 172px) 1fr auto
+        - grid-template-rows: auto auto
         - align-items: center
-        - gap: 26px
+        - gap: 6px 26px
         custom_fields:
           meta:
           - justify-self: start
+          unit:
+          - justify-self: start
       custom_fields:
         dev: |
-          [[[ return `<svg width="172" height="158" viewBox="0 0 172 158" fill="none">
+          [[[ return `<svg width="100%" height="auto" viewBox="0 0 172 158"
+            style="max-width:172px;display:block" fill="none">
             <rect x="3" y="3" width="166" height="152" rx="24" fill="#0b0b0d" stroke="#c9cdd2" stroke-width="3"/>
             <rect x="9" y="9" width="154" height="140" rx="19" fill="#141416" stroke="#2a2a2e"/>
             <rect x="18" y="20" width="66" height="104" rx="11" fill="#0a0a0c" stroke="#242428"/>
@@ -306,6 +340,32 @@ views:
             <text x="123" y="128" font-family="system-ui" font-weight="700" font-size="9" fill="#c9cdd2" text-anchor="middle" letter-spacing="1.5">INKBIRD</text>
             <circle cx="63" cy="136" r="10" fill="#0a0a0c" stroke="#c9cdd2" stroke-width="1.5"/>
             <circle cx="63" cy="136" r="6" fill="#1a1a1e"/></svg>`; ]]]
+        unit:
+          card:
+            type: custom:button-card
+            name: |
+              [[[ return states['input_select.inkbird_unit'].state; ]]]
+            tap_action:
+              action: call-service
+              service: input_select.select_option
+              target:
+                entity_id: input_select.inkbird_unit
+              data:
+                option: |
+                  [[[ return states['input_select.inkbird_unit'].state === '°C' ? '°F' : '°C'; ]]]
+            styles:
+              card:
+                - width: 44px
+                - height: 24px
+                - min-height: 24px
+                - border-radius: 7px
+                - border: 1px solid "#4d3f33"
+                - background: "#33291f"
+                - color: "#ff6a2c"
+                - font-family: ui-monospace, monospace
+                - font-weight: 700
+                - font-size: 1.05rem
+                - padding: 0
         meta: |
           [[[
             var b = states['sensor.int_14_bw_battery'].state;
@@ -331,19 +391,6 @@ views:
               <span style="font-family:ui-monospace,monospace;font-weight:600;color:#f5ede4">${isNaN(raw)?'—':pct+'%'}</span>
             </div>`;
           ]]]
-    - type: entities
-      entities:
-      - entity: input_select.inkbird_active_probe
-        name: Active probe (for recipes)
-      - entity: input_select.inkbird_unit
-        name: Temperature unit
-      card_mod:
-        style: |
-          ha-card {
-            background: linear-gradient(180deg,#211b16,#2b231d);
-            border:1px solid #3a2f27; border-radius:18px; color:#f5ede4;
-          }
-          .card-content { color:#f5ede4; }
     - type: grid
       columns: 2
       square: false
@@ -353,6 +400,7 @@ views:
         variables:
           num: 1
           probe: sensor.int_14_bw_probe_1
+          ambient: sensor.int_14_bw_probe_1_ambient
           target: input_number.inkbird_target_1
           pname: input_text.inkbird_name_1
           pstate: sensor.inkbird_probe_1_state
@@ -361,6 +409,7 @@ views:
         variables:
           num: 2
           probe: sensor.int_14_bw_probe_2
+          ambient: sensor.int_14_bw_probe_2_ambient
           target: input_number.inkbird_target_2
           pname: input_text.inkbird_name_2
           pstate: sensor.inkbird_probe_2_state
@@ -369,6 +418,7 @@ views:
         variables:
           num: 3
           probe: sensor.int_14_bw_probe_3
+          ambient: sensor.int_14_bw_probe_3_ambient
           target: input_number.inkbird_target_3
           pname: input_text.inkbird_name_3
           pstate: sensor.inkbird_probe_3_state
@@ -377,6 +427,7 @@ views:
         variables:
           num: 4
           probe: sensor.int_14_bw_probe_4
+          ambient: sensor.int_14_bw_probe_4_ambient
           target: input_number.inkbird_target_4
           pname: input_text.inkbird_name_4
           pstate: sensor.inkbird_probe_4_state
