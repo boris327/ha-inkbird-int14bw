@@ -10,6 +10,14 @@ CHR_BATTERY = "00002a19-0000-1000-8000-00805f9b34fb"
 
 LOCAL_NAME = "INT-14-BW"
 
+
+def is_supported_name(name: str | None) -> bool:
+    """Return whether a BLE name is the exact supported thermometer model."""
+    # Do not use substring matching here: INT-14S-BW and INT-12I-BW use
+    # different FF01 layouts and can otherwise produce plausible but unsafe
+    # temperature readings.
+    return name == LOCAL_NAME
+
 MANUFACTURER = "Inkbird"
 MODEL = "INT-14-BW"
 
