@@ -30,6 +30,7 @@ from .const import (
     DEFAULT_TEMP_UNIT,
     DOMAIN,
     LOCAL_NAME,
+    is_supported_name,
     MODEL,
     UNIT_AUTO,
     UNIT_CELSIUS,
@@ -39,7 +40,7 @@ from .const import (
 
 def _is_supported(info: BluetoothServiceInfoBleak) -> bool:
     """Return True if an advertisement looks like an INT-14-BW."""
-    return info.name == LOCAL_NAME or LOCAL_NAME in (info.name or "")
+    return is_supported_name(info.name)
 
 
 class InkbirdConfigFlow(ConfigFlow, domain=DOMAIN):
