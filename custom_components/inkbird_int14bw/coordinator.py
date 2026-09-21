@@ -35,6 +35,7 @@ from .const import (
     CHR_FF02,
     CHR_FF03,
     NUM_PROBES,
+    is_supported_name,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -165,6 +166,20 @@ class InkbirdCoordinator:
                 # Bluetooth stack will keep scanning; just wait and retry.
                 self._set_available(False)
                 await self._sleep(20)
+                continue
+
+            # Manual setup accepts an address, so discovery is not the only
+            # model boundary. Reject known names for look-alike models before
+            # subscribing to FF01: their byte layouts differ and decoding them
+            # as an INT-14-BW can surface dangerously wrong temperatures.
+            if device.name is not None and not is_supported_name(device.name):
+                _LOGGER.error(
+                    "Refusing unsupported Inkbird model %s at %s",
+                    device.name,
+                    self.address,
+                )
+                self._set_available(False)
+                await self._sleep(60)
                 continue
 
             started = self.hass.loop.time()
