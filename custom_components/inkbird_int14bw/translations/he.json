@@ -26,25 +26,71 @@
     "step": {
       "init": {
         "title": "הגדרות Inkbird INT-14-BW",
+        "description": "חיבור Wi-Fi (Tuya LAN) מאפשר ל-Home Assistant לקרוא את המדחום דרך הרשת הביתית במקום להחזיק את חיבור הבלוטות', כך שאפליקציית Inkbird נשארת זמינה במקביל. השאר את שדות ה-Wi-Fi ריקים כדי להמשיך עם בלוטות' בלבד. מדריך הקמה: סעיף \"Option C: Wi-Fi (Tuya LAN)\" ב-README.",
         "data": {
-          "temperature_unit": "יחידת טמפרטורה"
+          "temperature_unit": "יחידת טמפרטורה",
+          "transport": "מצב חיבור",
+          "wifi_host": "Wi-Fi: כתובת IP של התחנה",
+          "wifi_device_id": "Wi-Fi: מזהה מכשיר (Tuya device ID)",
+          "wifi_local_key": "Wi-Fi: מפתח מקומי (Tuya local key)",
+          "wifi_version": "Wi-Fi: גרסת פרוטוקול Tuya",
+          "wifi_port": "Wi-Fi: פורט TCP",
+          "wifi_poll_seconds": "Wi-Fi: תדירות תשאול (שניות)",
+          "wifi_test_on_save": "בדוק את חיבור ה-Wi-Fi לפני השמירה"
         },
         "data_description": {
-          "temperature_unit": "בחר כיצד יוצגו טמפרטורות הפרובים. \"לפי Home Assistant\" משאיר את יחידת המקור °C ונותן ל-Home Assistant להמיר לתצוגה."
+          "temperature_unit": "בחר כיצד יוצגו טמפרטורות הפרובים. \"לפי Home Assistant\" משאיר את יחידת המקור °C ונותן ל-Home Assistant להמיר לתצוגה.",
+          "transport": "אוטומטי מעדיף Wi-Fi כשהוא מוגדר ותקין, וחוזר לבלוטות' כשהתחנה יוצאת מהרשת. Wi-Fi בלבד לא נוגע בבלוטות' כלל, כך שאפליקציית Inkbird ממשיכה לעבוד.",
+          "wifi_host": "כתובת התחנה ברשת שלך. שריין לה IP קבוע בהגדרות ה-DHCP של הראוטר כדי שהכתובת לא תשתנה.",
+          "wifi_device_id": "זווג את התחנה לאפליקציית Smart Life, ואז העתק את מזהה המכשיר מתוסף \"Tuya Local Key\" ל-Home Assistant (כניסה ב-QR) או מאשף TinyTuya. זה לא שם הדגם.",
+          "wifi_local_key": "מוצג לצד מזהה המכשיר באותו הכלי. זו לא סיסמת ה-Wi-Fi ולא סיסמת Inkbird. זיווג מחדש או איפוס של התחנה מייצר מפתח חדש.",
+          "wifi_version": "גרסת פרוטוקול Tuya LAN. עבור INT-14-BW הערך הנכון הוא 3.5.",
+          "wifi_port": "השאר 6668 אלא אם אתה יודע שהתחנה מאזינה בפורט אחר.",
+          "wifi_poll_seconds": "באיזו תדירות Home Assistant שואל את התחנה על טמפרטורות. 10 שניות זו התחלה טובה.",
+          "wifi_test_on_save": "מומלץ: Home Assistant מתשאל את התחנה פעם אחת לפני השמירה ודוחה ערכים שלא מתחברים."
         }
+      }
+    },
+    "error": {
+      "cannot_connect": "לא ניתן להתחבר לתחנה דרך ה-Wi-Fi עם הערכים האלה. בדוק את ה-IP, מזהה המכשיר, המפתח המקומי וגרסת הפרוטוקול, וודא ש-Home Assistant יכול להגיע לרשת של התחנה.",
+      "wifi_incomplete": "חיבור Wi-Fi דורש את כל שלושת הערכים: כתובת IP של התחנה, מזהה מכשיר ומפתח מקומי."
+    }
+  },
+  "selector": {
+    "transport": {
+      "options": {
+        "auto": "אוטומטי (קודם Wi-Fi, גיבוי בלוטות')",
+        "bluetooth": "בלוטות' בלבד",
+        "wifi": "Wi-Fi (LAN) בלבד"
       }
     }
   },
   "entity": {
     "sensor": {
-      "probe1": { "name": "פרוב 1" },
-      "probe2": { "name": "פרוב 2" },
-      "probe3": { "name": "פרוב 3" },
-      "probe4": { "name": "פרוב 4" },
-      "probe1_ambient": { "name": "פרוב 1 סביבתי" },
-      "probe2_ambient": { "name": "פרוב 2 סביבתי" },
-      "probe3_ambient": { "name": "פרוב 3 סביבתי" },
-      "probe4_ambient": { "name": "פרוב 4 סביבתי" }
+      "probe1": {
+        "name": "פרוב 1"
+      },
+      "probe2": {
+        "name": "פרוב 2"
+      },
+      "probe3": {
+        "name": "פרוב 3"
+      },
+      "probe4": {
+        "name": "פרוב 4"
+      },
+      "probe1_ambient": {
+        "name": "פרוב 1 סביבתי"
+      },
+      "probe2_ambient": {
+        "name": "פרוב 2 סביבתי"
+      },
+      "probe3_ambient": {
+        "name": "פרוב 3 סביבתי"
+      },
+      "probe4_ambient": {
+        "name": "פרוב 4 סביבתי"
+      }
     }
   }
 }
