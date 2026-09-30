@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 
+from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_ADDRESS,
@@ -12,10 +13,13 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from homeassistant.components import bluetooth
-
-from .const import DOMAIN
+from .const import (
+    CONF_TRANSPORT,
+    DEFAULT_TRANSPORT,
+    TRANSPORT_WIFI,
+)
 from .coordinator import InkbirdCoordinator
+from .tuya_lan import lan_config_from_options
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,14 +31,25 @@ type InkbirdConfigEntry = ConfigEntry[InkbirdCoordinator]
 async def async_setup_entry(hass: HomeAssistant, entry: InkbirdConfigEntry) -> bool:
     """Set up Inkbird INT-14-BW from a config entry."""
     address: str = entry.data[CONF_ADDRESS].upper()
+    transport = entry.options.get(CONF_TRANSPORT, DEFAULT_TRANSPORT)
+    lan_config = lan_config_from_options(entry.options)
 
-    # Ensure a Bluetooth adapter/proxy capable of connecting is present.
-    if not bluetooth.async_scanner_count(hass, connectable=True):
+    if transport != TRANSPORT_WIFI:
+        # Ensure a Bluetooth adapter/proxy capable of connecting is present.
+        if not bluetooth.async_scanner_count(hass, connectable=True):
+            raise ConfigEntryNotReady(
+                "No connectable Bluetooth adapter or proxy is available"
+            )
+    elif lan_config is None or not lan_config.is_complete:
         raise ConfigEntryNotReady(
-            "No connectable Bluetooth adapter or proxy is available"
+            "Wi-Fi only mode is selected but the Wi-Fi (Tuya LAN) settings "
+            "are incomplete - open Configure and fill in host, device ID and "
+            "local key, or switch the connection mode back"
         )
 
-    coordinator = InkbirdCoordinator(hass, address)
+    coordinator = InkbirdCoordinator(
+        hass, address, transport=transport, lan_config=lan_config
+    )
     await coordinator.async_start()
     entry.runtime_data = coordinator
 
