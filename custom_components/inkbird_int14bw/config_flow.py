@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
@@ -27,15 +26,30 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_TEMP_UNIT,
+    CONF_TRANSPORT,
+    CONF_WIFI_DEVICE_ID,
+    CONF_WIFI_HOST,
+    CONF_WIFI_LOCAL_KEY,
+    CONF_WIFI_POLL_SECONDS,
+    CONF_WIFI_PORT,
+    CONF_WIFI_TEST_ON_SAVE,
+    CONF_WIFI_VERSION,
     DEFAULT_TEMP_UNIT,
+    DEFAULT_TRANSPORT,
+    DEFAULT_WIFI_POLL_SECONDS,
+    DEFAULT_WIFI_PORT,
+    DEFAULT_WIFI_VERSION,
     DOMAIN,
-    LOCAL_NAME,
-    is_supported_name,
     MODEL,
+    TRANSPORT_AUTO,
+    TRANSPORT_BLUETOOTH,
+    TRANSPORT_WIFI,
     UNIT_AUTO,
     UNIT_CELSIUS,
     UNIT_FAHRENHEIT,
+    is_supported_name,
 )
+from .tuya_lan import lan_config_from_options, test_lan_connection
 
 
 def _is_supported(info: BluetoothServiceInfoBleak) -> bool:
@@ -55,7 +69,7 @@ class InkbirdConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Return the options flow (temperature unit)."""
+        """Return the options flow (temperature unit, Wi-Fi)."""
         return InkbirdOptionsFlow()
 
     async def async_step_bluetooth(
@@ -133,15 +147,12 @@ class InkbirdConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class InkbirdOptionsFlow(OptionsFlow):
-    """Options: choose the temperature unit for the probe sensors."""
+    """Options: temperature unit and the Wi-Fi (Tuya LAN) connection."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+    def _defaults(self) -> dict[str, Any]:
+        return self.config_entry.options
 
-        current = self.config_entry.options.get(CONF_TEMP_UNIT, DEFAULT_TEMP_UNIT)
+    def _schema(self, defaults: dict[str, Any]) -> vol.Schema:
         unit_selector = SelectSelector(
             SelectSelectorConfig(
                 mode=SelectSelectorMode.DROPDOWN,
@@ -153,9 +164,91 @@ class InkbirdOptionsFlow(OptionsFlow):
                 ],
             )
         )
+        transport_selector = SelectSelector(
+            SelectSelectorConfig(
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="transport",
+                options=[
+                    SelectOptionDict(
+                        value=TRANSPORT_AUTO,
+                        label="Automatic (Wi-Fi first, Bluetooth fallback)",
+                    ),
+                    SelectOptionDict(value=TRANSPORT_BLUETOOTH, label="Bluetooth only"),
+                    SelectOptionDict(value=TRANSPORT_WIFI, label="Wi-Fi (LAN) only"),
+                ],
+            )
+        )
+        return vol.Schema(
+            {
+                vol.Required(
+                    CONF_TEMP_UNIT,
+                    default=defaults.get(CONF_TEMP_UNIT, DEFAULT_TEMP_UNIT),
+                ): unit_selector,
+                vol.Required(
+                    CONF_TRANSPORT,
+                    default=defaults.get(CONF_TRANSPORT, DEFAULT_TRANSPORT),
+                ): transport_selector,
+                vol.Optional(
+                    CONF_WIFI_HOST, default=defaults.get(CONF_WIFI_HOST, "")
+                ): str,
+                vol.Optional(
+                    CONF_WIFI_DEVICE_ID,
+                    default=defaults.get(CONF_WIFI_DEVICE_ID, ""),
+                ): str,
+                vol.Optional(
+                    CONF_WIFI_LOCAL_KEY,
+                    default=defaults.get(CONF_WIFI_LOCAL_KEY, ""),
+                ): str,
+                vol.Optional(
+                    CONF_WIFI_VERSION,
+                    default=defaults.get(CONF_WIFI_VERSION, DEFAULT_WIFI_VERSION),
+                ): vol.All(vol.Coerce(float), vol.Range(min=3.1, max=3.5)),
+                vol.Optional(
+                    CONF_WIFI_PORT,
+                    default=defaults.get(CONF_WIFI_PORT, DEFAULT_WIFI_PORT),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+                vol.Optional(
+                    CONF_WIFI_POLL_SECONDS,
+                    default=defaults.get(
+                        CONF_WIFI_POLL_SECONDS, DEFAULT_WIFI_POLL_SECONDS
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
+                vol.Optional(CONF_WIFI_TEST_ON_SAVE, default=False): bool,
+            }
+        )
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            test_on_save = user_input.pop(CONF_WIFI_TEST_ON_SAVE, False)
+            # Store Wi-Fi values stripped so trailing spaces never break auth.
+            for key in (CONF_WIFI_HOST, CONF_WIFI_DEVICE_ID, CONF_WIFI_LOCAL_KEY):
+                user_input[key] = str(user_input.get(key) or "").strip()
+
+            lan_config = lan_config_from_options(user_input)
+            if user_input.get(CONF_TRANSPORT) == TRANSPORT_WIFI and (
+                lan_config is None or not lan_config.is_complete
+            ):
+                errors["base"] = "wifi_incomplete"
+            elif test_on_save:
+                if lan_config is None or not lan_config.is_complete:
+                    errors["base"] = "wifi_incomplete"
+                else:
+                    try:
+                        await self.hass.async_add_executor_job(
+                            test_lan_connection, lan_config
+                        )
+                    except Exception:  # noqa: BLE001 - privacy-safe setup error
+                        errors["base"] = "cannot_connect"
+
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_TEMP_UNIT, default=current): unit_selector}
-            ),
+            data_schema=self._schema(user_input or self._defaults()),
+            errors=errors,
         )
