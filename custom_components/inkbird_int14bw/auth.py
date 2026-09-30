@@ -101,3 +101,13 @@ def parse_probe_temp(data: bytes, offset: int) -> float | None:
     if value in (32766, 32767, -32768):
         return None
     return round(value / 10.0, 1)
+
+
+def parse_dock_states(data: bytes | bytearray) -> list[bool]:
+    """Parse per-probe dock/charge state from an FF03 (or Tuya DP131) payload.
+
+    Four [status, 0x10] pairs then a trailer; the per-probe status byte sits
+    at offset i*2 with bit 0x02 = docked/charging (0x01 = out of dock / in
+    use, 0x03 = docked). Confirmed live on INT-14-BW hardware.
+    """
+    return [bool(i * 2 < len(data) and data[i * 2] & 0x02) for i in range(4)]
