@@ -26,25 +26,71 @@
     "step": {
       "init": {
         "title": "Inkbird INT-14-BW options",
+        "description": "Wi-Fi (Tuya LAN) lets Home Assistant read the thermometer over your local network instead of holding the Bluetooth connection, so the Inkbird app stays usable in parallel. Leave the Wi-Fi fields empty to keep using Bluetooth only. Setup guide: README section \"Option C: Wi-Fi (Tuya LAN)\".",
         "data": {
-          "temperature_unit": "Temperature unit"
+          "temperature_unit": "Temperature unit",
+          "transport": "Connection mode",
+          "wifi_host": "Wi-Fi: station IP address",
+          "wifi_device_id": "Wi-Fi: Tuya device ID",
+          "wifi_local_key": "Wi-Fi: Tuya local key",
+          "wifi_version": "Wi-Fi: Tuya protocol version",
+          "wifi_port": "Wi-Fi: TCP port",
+          "wifi_poll_seconds": "Wi-Fi: poll interval (seconds)",
+          "wifi_test_on_save": "Test the Wi-Fi connection before saving"
         },
         "data_description": {
-          "temperature_unit": "Choose how probe temperatures are reported. \"Follow Home Assistant\" keeps the device's native °C and lets Home Assistant convert for display."
+          "temperature_unit": "Choose how probe temperatures are reported. \"Follow Home Assistant\" keeps the device's native °C and lets Home Assistant convert for display.",
+          "transport": "Automatic prefers Wi-Fi when it is configured and healthy, and falls back to Bluetooth when the station drops off the network. Wi-Fi only never touches Bluetooth, so the Inkbird app keeps working.",
+          "wifi_host": "The station's address on your network. Reserve a fixed IP for it in your router's DHCP settings so it does not change.",
+          "wifi_device_id": "Pair the station into the Smart Life app, then copy the device ID from the \"Tuya Local Key\" Home Assistant add-on (QR login) or the TinyTuya wizard. Not the model name.",
+          "wifi_local_key": "Shown next to the device ID by the same tool. It is not your Wi-Fi password and not your Inkbird password. Re-pairing or resetting the station generates a new key.",
+          "wifi_version": "Tuya LAN protocol version. 3.5 is correct for the INT-14-BW.",
+          "wifi_port": "Leave at 6668 unless you know the station listens elsewhere.",
+          "wifi_poll_seconds": "How often Home Assistant asks the station for temperatures. 10 seconds is a good start.",
+          "wifi_test_on_save": "Recommended: Home Assistant polls the station once before saving and refuses values that do not connect."
         }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the station over Wi-Fi with these values. Check the IP, device ID, local key and protocol version, and make sure Home Assistant can reach the station's network.",
+      "wifi_incomplete": "Wi-Fi connection needs all three values: station IP address, Tuya device ID and local key."
+    }
+  },
+  "selector": {
+    "transport": {
+      "options": {
+        "auto": "Automatic (Wi-Fi first, Bluetooth fallback)",
+        "bluetooth": "Bluetooth only",
+        "wifi": "Wi-Fi (LAN) only"
       }
     }
   },
   "entity": {
     "sensor": {
-      "probe1": { "name": "Probe 1" },
-      "probe2": { "name": "Probe 2" },
-      "probe3": { "name": "Probe 3" },
-      "probe4": { "name": "Probe 4" },
-      "probe1_ambient": { "name": "Probe 1 ambient" },
-      "probe2_ambient": { "name": "Probe 2 ambient" },
-      "probe3_ambient": { "name": "Probe 3 ambient" },
-      "probe4_ambient": { "name": "Probe 4 ambient" }
+      "probe1": {
+        "name": "Probe 1"
+      },
+      "probe2": {
+        "name": "Probe 2"
+      },
+      "probe3": {
+        "name": "Probe 3"
+      },
+      "probe4": {
+        "name": "Probe 4"
+      },
+      "probe1_ambient": {
+        "name": "Probe 1 ambient"
+      },
+      "probe2_ambient": {
+        "name": "Probe 2 ambient"
+      },
+      "probe3_ambient": {
+        "name": "Probe 3 ambient"
+      },
+      "probe4_ambient": {
+        "name": "Probe 4 ambient"
+      }
     }
   }
 }
