@@ -1,11 +1,22 @@
 """Connection coordinator for the Inkbird INT-14-BW.
 
-Uses Home Assistant's built-in Bluetooth stack (``homeassistant.components
-.bluetooth``) plus ``bleak-retry-connector``. This means the same code path
-works whether the adapter is a local USB/onboard controller or a remote
-ESPHome Bluetooth proxy — HA routes the connection through whichever path can
-reach the device, and we never talk to BlueZ directly or fight the scanner
-for the adapter.
+Two transports feed the same data object:
+
+- **Bluetooth** (the original path): Home Assistant's built-in Bluetooth
+  stack (``homeassistant.components.bluetooth``) plus
+  ``bleak-retry-connector``. The same code path works whether the adapter is
+  a local USB/onboard controller or a remote ESPHome Bluetooth proxy - HA
+  routes the connection through whichever path can reach the device, and we
+  never talk to BlueZ directly or fight the scanner for the adapter.
+
+- **Wi-Fi (Tuya LAN)**: the station is polled over the local network with
+  its Tuya device ID and local key (see tuya_lan.py). This needs no
+  Bluetooth at all and does not hold the single BLE connection, so the
+  Inkbird phone app keeps working in parallel.
+
+In the default "auto" mode Wi-Fi is preferred once configured: the BLE loop
+stays idle while LAN polling is healthy and takes over automatically if the
+station drops off the network.
 """
 from __future__ import annotations
 
@@ -15,10 +26,9 @@ import logging
 from collections.abc import Callable
 
 from bleak import BleakClient
-from bleak.backends.device import BLEDevice
 from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
-
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import BluetoothCallbackMatcher
 from homeassistant.core import HomeAssistant, callback
@@ -27,6 +37,7 @@ from .auth import (
     build_challenge_request,
     build_clock_sync,
     build_verify_response,
+    parse_dock_states,
     parse_probe_temp,
 )
 from .const import (
@@ -34,8 +45,22 @@ from .const import (
     CHR_FF01,
     CHR_FF02,
     CHR_FF03,
+    DEFAULT_TRANSPORT,
     NUM_PROBES,
+    TRANSPORT_AUTO,
+    TRANSPORT_BLUETOOTH,
+    TRANSPORT_WIFI,
     is_supported_name,
+)
+from .tuya_lan import (
+    DP_BATTERY,
+    DP_STATE,
+    DP_TEMPERATURES,
+    TuyaLanConfig,
+    decode_battery_dp,
+    decode_dock_states_dp,
+    decode_temperatures_dp,
+    fetch_lan_dps,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,21 +104,33 @@ class InkbirdData:
 
 
 class InkbirdCoordinator:
-    """Maintains a persistent authenticated BLE session and pushes updates."""
+    """Maintains the device link(s) and pushes updates to the sensors."""
 
-    def __init__(self, hass: HomeAssistant, address: str) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        address: str,
+        transport: str = DEFAULT_TRANSPORT,
+        lan_config: TuyaLanConfig | None = None,
+    ) -> None:
         self.hass = hass
         self.address = address.upper()
+        self.transport = transport
+        self.lan_config = lan_config
         self.data = InkbirdData()
         self._client: BleakClient | None = None
         self._listeners: list[Callable[[], None]] = []
         self._run_task: asyncio.Task | None = None
+        self._lan_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._authed = asyncio.Event()
         self._challenge: bytes | None = None
         self._challenge_evt = asyncio.Event()
         self._last_rx = 0.0
         self._available = False
+        self._ble_up = False
+        self._lan_up = False
+        self._last_lan_ok: float | None = None
 
     # ---- public API -------------------------------------------------------
 
@@ -118,39 +155,137 @@ class InkbirdCoordinator:
 
     async def async_start(self) -> None:
         self._stop.clear()
-        # Background task so the persistent connection loop never blocks
-        # Home Assistant startup (bootstrap does not wait on it).
-        self._run_task = self.hass.async_create_background_task(
-            self._run(), name="inkbird_int14bw connection loop"
-        )
+        if self.transport != TRANSPORT_WIFI:
+            # Background task so the persistent connection loop never blocks
+            # Home Assistant startup (bootstrap does not wait on it).
+            self._run_task = self.hass.async_create_background_task(
+                self._run(), name="inkbird_int14bw connection loop"
+            )
+        if self._lan_active:
+            self._lan_task = self.hass.async_create_background_task(
+                self._run_lan(), name="inkbird_int14bw lan poll loop"
+            )
 
     async def async_stop(self) -> None:
-        """Cleanly stop the connection loop so reload/disable never hang.
+        """Cleanly stop the connection loops so reload/disable never hang.
 
         Must not raise: HA calls this from async_unload_entry, and any
         exception there makes reloading or disabling the entry require a full
         restart instead.
         """
         self._stop.set()
-        task = self._run_task
-        self._run_task = None
-        if task is not None:
+        for task in (self._run_task, self._lan_task):
+            if task is None:
+                continue
             task.cancel()
             # CancelledError is a BaseException, so it is NOT caught by
             # suppress(Exception) — catch it explicitly.
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        self._run_task = None
+        self._lan_task = None
         client = self._client
         self._client = None
         if client is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(client.disconnect(), timeout=5)
 
-    # ---- connection loop --------------------------------------------------
+    # ---- Wi-Fi (Tuya LAN) loop ---------------------------------------------
+
+    @property
+    def _lan_active(self) -> bool:
+        """Whether the LAN poll loop should run at all."""
+        return (
+            self.lan_config is not None
+            and self.lan_config.is_complete
+            and self.transport != TRANSPORT_BLUETOOTH
+        )
+
+    def _lan_healthy(self) -> bool:
+        """Whether the LAN answered recently enough to be the live source."""
+        if self.lan_config is None or self._last_lan_ok is None:
+            return False
+        grace = max(3 * self.lan_config.poll_seconds, 30)
+        return (self.hass.loop.time() - self._last_lan_ok) < grace
+
+    async def _run_lan(self) -> None:
+        """Poll the station over Tuya LAN until stopped."""
+        assert self.lan_config is not None
+        config = self.lan_config
+        failures = 0
+        while not self._stop.is_set():
+            try:
+                dps = await self.hass.async_add_executor_job(fetch_lan_dps, config)
+            except Exception as err:  # noqa: BLE001 - resilience loop
+                failures += 1
+                if failures == 1 or failures % 12 == 0:
+                    _LOGGER.warning(
+                        "Inkbird Tuya LAN poll failed (%s); will keep retrying%s",
+                        err,
+                        " over Bluetooth" if self.transport == TRANSPORT_AUTO else "",
+                    )
+                else:
+                    _LOGGER.debug("Inkbird Tuya LAN poll failed: %s", err)
+            else:
+                if failures:
+                    _LOGGER.info("Inkbird Tuya LAN polling recovered")
+                failures = 0
+                self._last_lan_ok = self.hass.loop.time()
+                self._apply_lan_dps(dps)
+                if (
+                    self.transport == TRANSPORT_AUTO
+                    and self._client is not None
+                    and self._client.is_connected
+                ):
+                    # Wi-Fi is healthy again: release the single BLE link so
+                    # the Inkbird app can use it; the BLE loop stays idle
+                    # while _lan_healthy() holds.
+                    _LOGGER.debug("Wi-Fi healthy; releasing the BLE link")
+                    with contextlib.suppress(Exception):
+                        await self._client.disconnect()
+            self._set_lan_up(self._lan_healthy())
+            await self._sleep(config.poll_seconds)
+
+    def _apply_lan_dps(self, dps: dict) -> None:
+        """Apply one LAN poll to the shared data object."""
+        changed = False
+        docked = decode_dock_states_dp(dps.get(DP_STATE))
+        if docked is not None and docked != self.data.docked:
+            self.data.docked = docked
+            self.data.apply_mask()
+            changed = True
+        temps = decode_temperatures_dp(dps.get(DP_TEMPERATURES))
+        if temps is not None:
+            probes, ambient = temps
+            if probes != self.data._raw or ambient != self.data._raw_ambient:
+                self.data._raw = list(probes)
+                self.data._raw_ambient = list(ambient)
+                self.data.apply_mask()
+                changed = True
+        battery = decode_battery_dp(dps.get(DP_BATTERY))
+        if battery is not None and battery != self.data.battery:
+            self.data.battery = battery
+            changed = True
+        _LOGGER.debug(
+            "LAN poll -> probes=%s ambient=%s docked=%s battery=%s",
+            self.data.probes,
+            self.data.ambient,
+            self.data.docked,
+            self.data.battery,
+        )
+        if changed:
+            self._notify_listeners()
+
+    # ---- Bluetooth connection loop ------------------------------------------
 
     async def _run(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            if self.transport == TRANSPORT_AUTO and self._lan_healthy():
+                # Wi-Fi polling is healthy: stay off the single BLE link so
+                # the Inkbird app remains usable, and re-check periodically.
+                await self._sleep(15)
+                continue
             # Connect right after a *fresh* advertisement whenever we can:
             # the INT-14-BW is only reliably listening for CONNECT_IND just
             # after it advertises, and an ESPHome proxy needs the device to
@@ -164,7 +299,7 @@ class InkbirdCoordinator:
             if device is None:
                 # Not in range of any adapter/proxy right now — the HA
                 # Bluetooth stack will keep scanning; just wait and retry.
-                self._set_available(False)
+                self._set_ble_up(False)
                 await self._sleep(20)
                 continue
 
@@ -178,7 +313,7 @@ class InkbirdCoordinator:
                     device.name,
                     self.address,
                 )
-                self._set_available(False)
+                self._set_ble_up(False)
                 await self._sleep(60)
                 continue
 
@@ -189,7 +324,7 @@ class InkbirdCoordinator:
                 raise
             except Exception as err:  # noqa: BLE001 - resilience loop
                 _LOGGER.debug("Inkbird session ended: %s", err)
-            self._set_available(False)
+            self._set_ble_up(False)
 
             # A session that held for a while was a real connection; only
             # quick deaths count as connect failures.
@@ -295,7 +430,7 @@ class InkbirdCoordinator:
                 response=False,
             )
 
-            self._set_available(True)
+            self._set_ble_up(True)
             self._last_rx = self.hass.loop.time()
 
             # Hold the link open; drop out if it dies or stalls.
@@ -312,16 +447,20 @@ class InkbirdCoordinator:
 
     # ---- notification handlers -------------------------------------------
 
-    @callback
-    def _on_ff01(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
-        self._last_rx = self.hass.loop.time()
+    def _apply_temps(self, raw: bytes) -> bool:
+        """Apply an FF01 temperature frame; True when visible values changed."""
         prev = (list(self.data.probes), list(self.data.ambient))
-        raw = bytes(data)
         for i, off in enumerate(_PROBE_OFFSETS):
             self.data._raw[i] = parse_probe_temp(raw, off)
         for i, off in enumerate(_AMBIENT_OFFSETS):
             self.data._raw_ambient[i] = parse_probe_temp(raw, off)
         self.data.apply_mask()
+        return (list(self.data.probes), list(self.data.ambient)) != prev
+
+    @callback
+    def _on_ff01(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
+        self._last_rx = self.hass.loop.time()
+        changed = self._apply_temps(bytes(data))
         _LOGGER.debug(
             "FF01 %s -> probes=%s ambient=%s docked=%s",
             data.hex(),
@@ -329,19 +468,16 @@ class InkbirdCoordinator:
             self.data.ambient,
             self.data.docked,
         )
-        if (list(self.data.probes), list(self.data.ambient)) != prev:
+        if changed:
             self._notify_listeners()
 
     @callback
     def _on_ff03(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
-        # Dock/state channel: four [status, 0x10] pairs then a trailer.
-        # Per-probe status byte at offset i*2; bit 0x02 = docked/charging
-        # (0x01 = out of dock / in use, 0x03 = docked). Confirmed live.
+        # Dock/state channel; see auth.parse_dock_states for the bit layout.
         self._last_rx = self.hass.loop.time()
         prev = list(self.data.probes)
-        for i in range(NUM_PROBES):
-            if i * 2 < len(data):
-                self.data.docked[i] = bool(data[i * 2] & 0x02)
+        for i, docked in enumerate(parse_dock_states(data)):
+            self.data.docked[i] = docked
         self.data.apply_mask()
         if self.data.probes != prev:
             self._notify_listeners()
@@ -385,8 +521,17 @@ class InkbirdCoordinator:
 
     # ---- helpers ----------------------------------------------------------
 
+    def _set_ble_up(self, up: bool) -> None:
+        self._ble_up = up
+        self._refresh_available()
+
+    def _set_lan_up(self, up: bool) -> None:
+        self._lan_up = up
+        self._refresh_available()
+
     @callback
-    def _set_available(self, available: bool) -> None:
+    def _refresh_available(self) -> None:
+        available = self._ble_up or self._lan_up
         if available != self._available:
             self._available = available
             self._notify_listeners()
