@@ -140,6 +140,17 @@ class InkbirdSensor(SensorEntity):
     def available(self) -> bool:
         return self.coordinator.available
 
+    @property
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        # Only the diagnostic battery sensor carries this - no need to
+        # repeat the same attribute on every probe/ambient entity too.
+        if self.entity_description.key != "battery":
+            return None
+        transport = self.coordinator.active_transport
+        if transport is None:
+            return None
+        return {"active_transport": transport}
+
     async def async_added_to_hass(self) -> None:
         """Subscribe to coordinator updates."""
         self.async_on_remove(

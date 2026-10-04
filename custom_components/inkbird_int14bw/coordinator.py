@@ -57,10 +57,11 @@ from .tuya_lan import (
     DP_STATE,
     DP_TEMPERATURES,
     TuyaLanConfig,
+    TuyaLanSession,
     decode_battery_dp,
     decode_dock_states_dp,
     decode_temperatures_dp,
-    fetch_lan_dps,
+    poll_lan_session,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,12 +132,29 @@ class InkbirdCoordinator:
         self._ble_up = False
         self._lan_up = False
         self._last_lan_ok: float | None = None
+        self._lan_session: TuyaLanSession | None = None
 
     # ---- public API -------------------------------------------------------
 
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def active_transport(self) -> str | None:
+        """Which transport most recently provided data.
+
+        "wifi" or "bluetooth", or None if neither is currently up. LAN takes
+        priority in the "auto" display sense too: _run_lan only lets BLE
+        stay connected when LAN isn't healthy (see _lan_healthy), so if both
+        happen to be momentarily up this still reports "wifi", matching
+        which one the data is actually coming from.
+        """
+        if self._lan_up:
+            return "wifi"
+        if self._ble_up:
+            return "bluetooth"
+        return None
 
     @callback
     def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
@@ -189,6 +207,11 @@ class InkbirdCoordinator:
         if client is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(client.disconnect(), timeout=5)
+        session = self._lan_session
+        self._lan_session = None
+        if session is not None:
+            with contextlib.suppress(Exception):
+                await self.hass.async_add_executor_job(session.close)
 
     # ---- Wi-Fi (Tuya LAN) loop ---------------------------------------------
 
@@ -208,6 +231,25 @@ class InkbirdCoordinator:
         grace = max(3 * self.lan_config.poll_seconds, 30)
         return (self.hass.loop.time() - self._last_lan_ok) < grace
 
+    def _poll_lan_session(self, config: TuyaLanConfig) -> dict:
+        """Run in an executor thread: reuse (or open) the persistent LAN
+        connection for one poll cycle. Only this method touches
+        self._lan_session, and _run_lan awaits each call before starting the
+        next, so there is no concurrent access to it to guard against.
+        """
+        if self._lan_session is None:
+            self._lan_session = TuyaLanSession(config)
+        try:
+            return poll_lan_session(self._lan_session, config)
+        except Exception:
+            # TuyaLanSession.poll() only raises for a connection problem it
+            # has already torn itself down for (see its docstring) - not
+            # merely for a quiet cycle - so dropping the session here on any
+            # exception is always the right call, not an overreaction.
+            self._lan_session.close()
+            self._lan_session = None
+            raise
+
     async def _run_lan(self) -> None:
         """Poll the station over Tuya LAN until stopped."""
         assert self.lan_config is not None
@@ -215,7 +257,9 @@ class InkbirdCoordinator:
         failures = 0
         while not self._stop.is_set():
             try:
-                dps = await self.hass.async_add_executor_job(fetch_lan_dps, config)
+                dps = await self.hass.async_add_executor_job(
+                    self._poll_lan_session, config
+                )
             except Exception as err:  # noqa: BLE001 - resilience loop
                 failures += 1
                 if failures == 1 or failures % 12 == 0:
@@ -247,7 +291,16 @@ class InkbirdCoordinator:
             await self._sleep(config.poll_seconds)
 
     def _apply_lan_dps(self, dps: dict) -> None:
-        """Apply one LAN poll to the shared data object."""
+        """Apply one LAN poll to the shared data object.
+
+        A poll cycle with no new push is normal (see TuyaLanSession) and
+        this method still logs the current sticky values every time it
+        runs, so a quiet cycle logs the exact same "LAN poll -> ..." line
+        as a cycle that just received fresh data - that line alone cannot
+        be trusted as proof of a live reading. `fresh` distinguishes the
+        two in the log so stale, merely-carried-forward values are never
+        mistaken for a just-confirmed one.
+        """
         changed = False
         docked = decode_dock_states_dp(dps.get(DP_STATE))
         if docked is not None and docked != self.data.docked:
@@ -266,8 +319,10 @@ class InkbirdCoordinator:
         if battery is not None and battery != self.data.battery:
             self.data.battery = battery
             changed = True
+        fresh = docked is not None or temps is not None or battery is not None
         _LOGGER.debug(
-            "LAN poll -> probes=%s ambient=%s docked=%s battery=%s",
+            "LAN poll (%s) -> probes=%s ambient=%s docked=%s battery=%s",
+            "fresh" if fresh else "quiet cycle, showing last known values",
             self.data.probes,
             self.data.ambient,
             self.data.docked,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -150,12 +151,24 @@ def test_lan_poll_requires_data_and_closes_socket(monkeypatch) -> None:
         def updatedps(self, dps, **kwargs):
             return {"dps": {}}
 
+        def set_socketTimeout(self, timeout):
+            pass
+
+        def receive(self):
+            # No unsolicited push ever arrives either - fetch_lan_dps must
+            # still raise (when response has no data), not hang.
+            raise TimeoutError("no data")
+
         def close(self):
             self.closed = True
 
     device = FakeDevice()
     monkeypatch.setattr(lan, "_device", lambda config: device)
-    config = lan.TuyaLanConfig(host="192.0.2.1", device_id="test", local_key="test")
+    # Small poll_seconds keeps the listen-window budget (poll_seconds - 2,
+    # capped at 8s) short so this test doesn't block for several seconds.
+    config = lan.TuyaLanConfig(
+        host="192.0.2.1", device_id="test", local_key="test", poll_seconds=3
+    )
     with pytest.raises(lan.TuyaLanError, match="no recognised"):
         lan.fetch_lan_dps(config)
     assert device.closed
@@ -168,3 +181,189 @@ def test_lan_poll_requires_data_and_closes_socket(monkeypatch) -> None:
     with pytest.raises(lan.TuyaLanError, match="unreachable"):
         lan.fetch_lan_dps(config)
     assert device.closed
+
+
+def test_lan_session_reuses_connection_on_quiet_cycles(monkeypatch) -> None:
+    """A TuyaLanSession must NOT reconnect just because one poll() call came
+    back with no recognised data - that is a normal, expected outcome for a
+    perfectly healthy connection sitting between two event-driven pushes
+    (DP131/DP103 were observed on real hardware to push only on change).
+    Reconnecting on every quiet cycle was tried and defeats the entire point
+    of a persistent session: confirmed on a live station, it caused a
+    reconnect roughly every other poll instead of the rare few-per-hour
+    expected.
+    """
+    import pytest
+    lan = load("tuya_lan")
+
+    class FakeDevice:
+        def __init__(self, push_queue):
+            self.closed = False
+            self.push_queue = push_queue
+
+        def status(self, **kwargs):
+            return {"dps": {"101": "C"}}  # no recognised sensor data yet
+
+        def set_socketTimeout(self, timeout):
+            pass
+
+        def heartbeat(self, **kwargs):
+            pass
+
+        def receive(self):
+            if self.push_queue:
+                return self.push_queue.pop(0)
+            raise TimeoutError("no data")
+
+        def close(self):
+            self.closed = True
+
+    connect_calls = []
+    push_queue = [{"dps": {"109": base64.b64encode(FF01_FRAME).decode()}}]
+
+    def fake_device_factory(config, **kwargs):
+        connect_calls.append((config, kwargs))
+        return FakeDevice(push_queue)
+
+    monkeypatch.setattr(lan, "_device", fake_device_factory)
+    config = lan.TuyaLanConfig(
+        host="192.0.2.1", device_id="test", local_key="test", poll_seconds=3
+    )
+    session = lan.TuyaLanSession(config)
+
+    # First poll: connects once, catches the queued push.
+    dps1 = lan.poll_lan_session(session, config)
+    assert "109" in dps1
+    assert len(connect_calls) == 1
+
+    # Several subsequent quiet polls: no new push, but must NOT raise and
+    # must NOT reconnect - that reconnect-on-every-quiet-cycle behaviour is
+    # exactly the bug being fixed here.
+    for _ in range(3):
+        dps = lan.poll_lan_session(session, config)
+        assert not any(k in dps for k in ("103", "109", "131"))
+    assert len(connect_calls) == 1, "poll() must not reconnect on quiet cycles"
+
+    session.close()
+    assert session._device is None
+
+
+def test_lan_session_reconnects_after_silence_exceeds_grace(monkeypatch) -> None:
+    """If a connection genuinely goes silent for longer than the health
+    grace window (matching the coordinator's own _lan_healthy() grace), the
+    session must give up on it, close it, and raise so the caller
+    reconnects - this is the backstop for a socket that is silently dead
+    without receive() ever raising a clean error for it.
+    """
+    import pytest
+    lan = load("tuya_lan")
+
+    class FakeDevice:
+        def __init__(self):
+            self.closed = False
+
+        def status(self, **kwargs):
+            return {"dps": {"101": "C"}}
+
+        def set_socketTimeout(self, timeout):
+            pass
+
+        def heartbeat(self, **kwargs):
+            pass
+
+        def receive(self):
+            raise TimeoutError("no data")
+
+        def close(self):
+            self.closed = True
+
+    devices = []
+
+    def fake_device_factory(config, **kwargs):
+        d = FakeDevice()
+        devices.append(d)
+        return d
+
+    monkeypatch.setattr(lan, "_device", fake_device_factory)
+    # poll_seconds=3 -> grace = max(3*3, 30) = 30s. Shrink the grace window
+    # directly on the session instance instead of sleeping 30+s in a test.
+    config = lan.TuyaLanConfig(
+        host="192.0.2.1", device_id="test", local_key="test", poll_seconds=3
+    )
+    session = lan.TuyaLanSession(config)
+    monkeypatch.setattr(type(session), "_data_silence_grace", 0.2)
+
+    # Poll with a tiny budget directly (bypassing poll_lan_session's
+    # poll_seconds-derived budget, which would itself take longer than the
+    # shrunk 0.2s grace window and make the first call race the grace check).
+    # First poll connects and is quiet - within grace, must not raise yet.
+    session.poll(0.01)
+    assert len(devices) == 1
+    assert not devices[0].closed
+
+    time.sleep(0.3)  # exceed the (shrunk) grace window
+
+    with pytest.raises(lan.TuyaLanError, match="no recognised"):
+        session.poll(0.01)
+    assert devices[0].closed, "the stale connection must be closed"
+
+    # Next poll must reconnect from scratch.
+    session.poll(0.01)
+    assert len(devices) == 2
+
+
+def test_lan_session_opens_persistent_socket_and_sends_heartbeats(monkeypatch) -> None:
+    """TuyaLanSession must ask tinytuya for persist=True, and must send a
+    heartbeat on every cycle that reuses an already-open connection.
+
+    tinytuya closes its own TCP socket at the end of every call unless the
+    device was constructed with persist=True - confirmed against a live
+    station, this meant each receive() during the "listen" window was
+    silently opening and closing its own short-lived connection, not
+    actually reading from a socket that had been sitting open and
+    listening. A real push was then only ever caught by chance, and a
+    persistent connection was not persistent at the TCP level at all.
+    """
+    lan = load("tuya_lan")
+
+    class FakeDevice:
+        def __init__(self):
+            self.closed = False
+            self.heartbeats = 0
+
+        def status(self, **kwargs):
+            return {"dps": {"101": "C"}}
+
+        def set_socketTimeout(self, timeout):
+            pass
+
+        def heartbeat(self, **kwargs):
+            self.heartbeats += 1
+
+        def receive(self):
+            raise TimeoutError("no data")
+
+        def close(self):
+            self.closed = True
+
+    calls = []
+    device = FakeDevice()
+
+    def fake_device_factory(config, persist=False):
+        calls.append(persist)
+        return device
+
+    monkeypatch.setattr(lan, "_device", fake_device_factory)
+    config = lan.TuyaLanConfig(
+        host="192.0.2.1", device_id="test", local_key="test", poll_seconds=3
+    )
+    session = lan.TuyaLanSession(config)
+
+    session.poll(0.01)  # first poll: connects
+    assert calls == [True], "the session's device must be created with persist=True"
+    assert device.heartbeats == 0, "no heartbeat needed right after status() connects"
+
+    session.poll(0.01)  # second poll: reuses the open connection
+    session.poll(0.01)
+    assert device.heartbeats == 2, "every reused-connection cycle must send a heartbeat"
+    assert not device.closed
